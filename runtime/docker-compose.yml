@@ -1,0 +1,92 @@
+# Docker Compose for SeaTunnel + Oracle + PostgreSQL
+# Windows host mode (uses host.docker.internal)
+# Uses gvenzl/oracle-xe:21-slim (freely available, supports LogMiner/CDC)
+
+services:
+  # Oracle Database (freely available image, compatible with LogMiner/CDC)
+  mds-oracle:
+    image: gvenzl/oracle-xe:21-slim
+    container_name: mds-oracle
+    hostname: mds-oracle
+    ports:
+      - "1521:1521"
+    environment:
+      ORACLE_PDB: FREEPDB1
+      ORACLE_PASSWORD: HrOracle123
+      ORACLE_CHARACTERSET: AL32UTF8
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+      - ./sql/initialization/oracle/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - seatunnel-net
+    healthcheck:
+      test: ["CMD-SHELL", "lsnrctl status | grep -q READY || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+    restart: unless-stopped
+
+  # PostgreSQL target database
+  mds-postgres:
+    image: postgres:16-alpine
+    container_name: mds-postgres
+    hostname: mds-postgres
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: etl_target
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: Postgres123
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./sql/initialization/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - seatunnel-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # SeaTunnel runtime (Zeta engine)
+  seatunnel:
+    image: apache/seatunnel:3.0.0
+    container_name: seatunnel
+    hostname: seatunnel
+    ports:
+      - "8080:8080"
+      - "5801:5801"
+    environment:
+      ORACLE_USER: hr
+      ORACLE_PASSWORD: HrOracle123
+      ORACLE_CDC_USER: C##DBZUSER
+      ORACLE_CDC_PASSWORD: dbz
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: Postgres123
+      HOST_IP: host.docker.internal
+    volumes:
+      - ./configs:/opt/seatunnel/configs
+      - ./sql:/opt/seatunnel/sql
+      - seatunnel-logs:/opt/seatunnel/logs
+    depends_on:
+      mds-oracle:
+        condition: service_healthy
+      mds-postgres:
+        condition: service_healthy
+    networks:
+      - seatunnel-net
+    command: ["/bin/bash", "-c", "/opt/seatunnel/bin/seatunnel.sh"]
+    restart: unless-stopped
+
+volumes:
+  oracle-data:
+  postgres-data:
+  seatunnel-logs:
+
+networks:
+  seatunnel-net:
+    driver: bridge
+    name: seatunnel-net
